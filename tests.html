@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Photo Culler Tests</title>
+<style>
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; margin: 24px; background: #fff; color: #111; }
+  .pass { color: #2e7d4f; } .fail { color: #c23a2b; font-weight: 600; }
+  h3 { margin: 16px 0 4px; font-size: 14px; }
+  pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; }
+  iframe { width: 100%; height: 700px; border: 1px solid #ccc; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>Photo Culler Tests</h1>
+<p>Runs the app (below) against throwaway folders in the browser's private sandbox file system. Your real files are never touched.</p>
+<div id="summary">Running…</div>
+<iframe id="app" src="index.html"></iframe>
+<div id="out"></div>
+<script>
+const out = document.getElementById('out');
+const results = [];
+function section(title) { out.insertAdjacentHTML('beforeend', `<h3>${title}</h3>`); }
+function log(ok, name, detail = '') {
+  results.push({ ok, name, detail });
+  out.insertAdjacentHTML('beforeend',
+    `<div class="${ok ? 'pass' : 'fail'}">${ok ? '✔' : '✘'} ${name}${detail ? `<pre>${detail}</pre>` : ''}</div>`);
+}
+function eq(name, actual, expected) {
+  const a = JSON.stringify(actual), e = JSON.stringify(expected);
+  log(a === e, name, a === e ? '' : `expected ${e}\nactual   ${a}`);
+}
+function ok(name, cond, detail = '') { log(!!cond, name, cond ? '' : detail); }
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, ms = 5000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (await fn()) return true; await sleep(30); }
+  return false;
+}
+
+const content = f => `content of ${f}`;
+async function writeFile(dir, name, data) {
+  const fh = await dir.getFileHandle(name, { create: true });
+  const w = await fh.createWritable(); await w.write(data); await w.close();
+}
+async function makeDir(parent, dirName, files) {
+  try { await parent.removeEntry(dirName, { recursive: true }); } catch {}
+  const dir = await parent.getDirectoryHandle(dirName, { create: true });
+  for (const f of files) await writeFile(dir, f, content(f));
+  return dir;
+}
+async function names(dir) {
+  const n = []; for await (const [name, h] of dir.entries()) if (h.kind === 'file') n.push(name);
+  return n.sort();
+}
+async function dirs(dir) {
+  const n = []; for await (const [name, h] of dir.entries()) if (h.kind === 'directory') n.push(name);
+  return n.sort();
+}
+async function read(dir, name) { return (await (await dir.getFileHandle(name)).getFile()).text(); }
+const bytesOf = files => files.reduce((a, f) => a + new TextEncoder().encode(content(f)).length, 0);
+
+async function jpegBytes(w = 300, h = 200, color = '#3a7') {
+  const c = new OffscreenCanvas(w, h);
+  const ctx = c.getContext('2d'); ctx.fillStyle = color; ctx.fillRect(0, 0, w, h);
+  return new Uint8Array(await (await c.convertToBlob({ type: 'image/jpeg' })).arrayBuffer());
+}
+// Minimal little-endian TIFF (the container ARW uses) with one IFD pointing at an embedded JPEG.
+function tiffWithJpeg(jpeg) {
+  const ifdSize = 2 + 2 * 12 + 4, jpegOff = 8 + ifdSize;
+  const buf = new ArrayBuffer(jpegOff + jpeg.length), dv = new DataView(buf);
+  dv.setUint8(0, 0x49); dv.setUint8(1, 0x49); dv.setUint16(2, 42, true); dv.setUint32(4, 8, true);
+  dv.setUint16(8, 2, true);
+  const entry = (o, tag, value) => { dv.setUint16(o, tag, true); dv.setUint16(o + 2, 4, true); dv.setUint32(o + 4, 1, true); dv.setUint32(o + 8, value, true); };
+  entry(10, 0x0201, jpegOff); entry(22, 0x0202, jpeg.length);
+  dv.setUint32(34, 0, true);
+  new Uint8Array(buf, jpegOff).set(jpeg);
+  return new Uint8Array(buf);
+}
+
+async function run() {
+  const frame = document.getElementById('app');
+  await new Promise(r => frame.contentWindow.PhotoCuller ? r() : frame.addEventListener('load', r, { once: true }));
+  const win = frame.contentWindow, doc = frame.contentDocument;
+  const P = win.PhotoCuller;
+  const { classify, summarize, buildPlan, setFolder, clearFolder, cull, undo, options, REJECTED_DIR } = P;
+  const $ = sel => doc.querySelector(sel);
+  const txt = id => doc.querySelector(`[data-testid="${id}"]`)?.textContent.trim();
+  const has = id => !!doc.querySelector(`[data-testid="${id}"]`);
+  const btnState = () => [$('#move-btn').disabled, $('#delete-btn').disabled];
+  const hint = () => $('#action-hint').textContent;
+  const zoneMsg = role => { const el = $(`#zone-${role} .zone-msg`); return el.hidden ? '' : el.textContent; };
+  const setSidecars = on => { const b = $('#opt-sidecars'); b.checked = on; b.dispatchEvent(new Event('change')); return P.idle(); };
+  const root = await navigator.storage.getDirectory();
+  const created = [];
+  const mk = async (name, files) => { created.push(name); return makeDir(root, name, files); };
+
+  // ------------------------------------------------------------------
+  section('Initial state');
+  eq('Hint before any folder is picked', hint(), 'Pick both folders to get started.');
+  eq('Both buttons disabled', btnState(), [true, true]);
+  eq('"How matching works" collapsed by default', $('#rules').open, false);
+  $('#help-link').click();
+  eq('"How matching works" link opens it', $('#rules').open, true);
+  $('#rules').open = false;
+  ok('Unsupported banner hidden in Chrome', $('#unsupported').hidden);
+  await setSidecars(true);
+
+  // ------------------------------------------------------------------
+  section('Matching logic');
+  eq('classify: uppercase JPG', classify('DSC0001.JPG').type, 'jpg');
+  eq('classify: .jpeg counts as jpg', classify('a.jpeg').type, 'jpg');
+  eq('classify: ARW', classify('DSC0001.ARW').type, 'arw');
+  eq('classify: xmp is a sidecar', classify('DSC0001.xmp').type, 'sidecar');
+  eq('classify: DSC1.ARW.xmp belongs to DSC1.ARW', [classify('DSC1.ARW.xmp').owner, classify('DSC1.ARW.xmp').key], ['dsc1.arw', 'dsc1']);
+  eq('classify: txt is other', classify('notes.txt').type, 'other');
+  eq('classify: hidden ._ file ignored', classify('._DSC0001.ARW'), null);
+  eq('classify: .DS_Store ignored', classify('.DS_Store'), null);
+  eq('classify: dots in base name', classify('trip.day1.001.jpg').base, 'trip.day1.001');
+  eq('summarize counts', summarize(['a.jpg', 'b.ARW', 'c.xmp', 'd.txt', '.DS_Store', '._b.ARW']),
+     { total: 4, jpg: 1, arw: 1, sidecar: 1, other: 1, hidden: 2 });
+
+  let p = buildPlan(
+    ['DSC1.jpg', 'DSC3.JPG'],
+    ['DSC1.ARW', 'DSC2.ARW', 'DSC3.arw', 'DSC1.jpg', 'DSC4.jpg', 'DSC1.xmp', '.DS_Store']);
+  eq('culled JPG → keeps matching ARW (case-insensitive)', p.keep, ['DSC1.ARW', 'DSC3.arw']);
+  eq('culled JPG → removes unmatched ARW + same-format JPGs', p.remove.map(r => r.name), ['DSC1.jpg', 'DSC2.ARW', 'DSC4.jpg']);
+  eq('culled JPG → leaves sidecars / hidden files (sidecars off)', p.ignored, ['.DS_Store', 'DSC1.xmp']);
+  eq('direction detected: culled are JPGs', p.culledTypes, ['jpg']);
+  eq('matchedCount counts culled photos with a match', p.matchedCount, 2);
+
+  p = buildPlan(['A.ARW', 'B.ARW'], ['A.jpg', 'B.JPEG', 'C.jpg', 'A.ARW']);
+  eq('culled ARW → keeps matching JPG/JPEG', p.keep, ['A.jpg', 'B.JPEG']);
+  eq('culled ARW → removes unmatched JPG + ARW', p.remove.map(r => r.name), ['A.ARW', 'C.jpg']);
+
+  eq('empty culled folder → culledPhotoCount 0', buildPlan([], ['A.jpg']).culledPhotoCount, 0);
+  p = buildPlan(['A.jpg', 'B.arw'], ['A.arw', 'B.jpg', 'A.jpg', 'B.arw']);
+  eq('mixed culled folder → per-name counterpart kept', p.keep, ['A.arw', 'B.jpg']);
+  eq('mixed culled folder → both types detected', p.culledTypes, ['arw', 'jpg']);
+  eq('numeric-aware sort', buildPlan(['x.jpg'], ['DSC10.arw', 'DSC2.arw']).remove.map(r => r.name), ['DSC2.arw', 'DSC10.arw']);
+  eq('low match: 1 of 3 culled photos matched', buildPlan(['A.jpg', 'B.jpg', 'C.jpg'], ['A.arw', 'Z.arw']).matchedCount, 1);
+
+  const scTarget = ['A.arw', 'A.jpg', 'A.xmp', 'C.arw', 'C.xmp', 'C.ARW.dop', 'D.xmp', 'A.JPG.xmp'];
+  p = buildPlan(['A.jpg', 'B.jpg'], scTarget, { sidecars: true });
+  eq('sidecars on → sidecars of removed photos go too', p.remove.map(r => r.name).sort(), ['A.JPG.xmp', 'A.jpg', 'C.ARW.dop', 'C.arw', 'C.xmp'].sort());
+  eq('sidecars on → sidecar of a kept photo and orphan sidecar stay', p.ignored.sort(), ['A.xmp', 'D.xmp']);
+  eq('sidecars on → sidecarCount', p.sidecarCount, 3);
+  p = buildPlan(['A.jpg', 'B.jpg'], scTarget, { sidecars: false });
+  eq('sidecars off → no sidecar removed', [p.sidecarCount, p.remove.filter(r => r.sidecar).length], [0, 0]);
+
+  // ------------------------------------------------------------------
+  section('Formatting');
+  eq('thousands separator uses the locale', P.fmtNum(1234567), (1234567).toLocaleString());
+  eq('plural: 1 file', P.plural(1, 'file'), '1 file');
+  eq('plural: 2 files', P.plural(2, 'file'), '2 files');
+  eq('bytes: 0', P.fmtBytes(0), '0 bytes');
+  eq('bytes: 999', P.fmtBytes(999), '999 bytes');
+  eq('bytes: 1.5 KB', P.fmtBytes(1500), '1.5 KB');
+  eq('bytes: 812 KB', P.fmtBytes(812000), '812 KB');
+  eq('bytes: 27.4 GB', P.fmtBytes(27.4e9), '27.4 GB');
+  eq('duration: few seconds', P.fmtDuration(5), 'a few seconds');
+  eq('duration: 40 sec', P.fmtDuration(42), '40 sec');
+  eq('duration: 3 min', P.fmtDuration(190), '3 min');
+  eq('duration: 1 h 5 min', P.fmtDuration(3900), '1 h 5 min');
+  eq('platform: Mac → Finder/Trash', P.platformNames('MacIntel'), { fm: 'Finder', trash: 'Trash' });
+  eq('platform: Windows → File Explorer/Recycle Bin', P.platformNames('Win32'), { fm: 'File Explorer', trash: 'Recycle Bin' });
+  eq('platform: Linux → neutral wording', P.platformNames('Linux x86_64').fm, 'your file manager');
+
+  const UA = {
+    safari: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+    firefox: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:128.0) Gecko/20100101 Firefox/128.0',
+    iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0 Mobile/15E148 Safari/604.1',
+    edge: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Edg/126.0',
+    chrome: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+  };
+  eq('browser detection', Object.values(UA).map(P.browserName), ['Safari', 'Firefox', 'mobile', 'Edge', 'Chrome']);
+  ok('unsupported message names Safari', P.unsupportedMessage('Safari').includes('Safari'));
+  ok('unsupported message for phones mentions desktop', P.unsupportedMessage('mobile').includes('desktop'));
+
+  // ------------------------------------------------------------------
+  section('Embedded previews');
+  const jpg = await jpegBytes();
+  let blob = await P.extractEmbeddedJpeg(new win.File([tiffWithJpeg(jpg)], 'X.ARW'));
+  ok('extracts the JPEG embedded in a TIFF/ARW', blob && blob.size === jpg.length);
+  eq('extracted preview starts with the JPEG marker', blob ? [...new Uint8Array(await blob.slice(0, 2).arrayBuffer())] : null, [0xff, 0xd8]);
+  eq('returns null for a file that is not a TIFF', await P.extractEmbeddedJpeg(new win.File(['not a raw file at all'], 'Y.ARW')), null);
+
+  // ------------------------------------------------------------------
+  section('Choosing and clearing folders');
+  const culledFiles = ['DSC0001.JPG', 'DSC0003.JPG', 'DSC0007.JPG', '.DS_Store'];
+  const targetFiles = ['DSC0001.ARW', 'DSC0002.ARW', 'DSC0003.ARW', 'DSC0004.ARW', 'DSC0005.ARW',
+                       'DSC0006.ARW', 'DSC0007.ARW', 'DSC0001.JPG', 'DSC0002.JPG', 'DSC0001.xmp', '._DSC0001.ARW'];
+  const expectedKept = ['._DSC0001.ARW', 'DSC0001.ARW', 'DSC0001.xmp', 'DSC0003.ARW', 'DSC0007.ARW'];
+  const expectedRemoved = ['DSC0001.JPG', 'DSC0002.ARW', 'DSC0002.JPG', 'DSC0004.ARW', 'DSC0005.ARW', 'DSC0006.ARW'];
+
+  let culled = await mk('culled', culledFiles);
+  let target = await mk('to-be-culled', targetFiles);
+
+  // Clicking anywhere in the box opens the picker (stubbed to return our test folder).
+  const pickerCalls = [];
+  win.showDirectoryPicker = async opts => { pickerCalls.push(opts); return culled; };
+  $('#zone-culled .body').click();
+  await until(() => txt('count-culled'));
+  await P.idle();
+  eq('Clicking the box opens the picker (read-only for culled)', pickerCalls.map(o => o.mode), ['read']);
+  eq('Culled count shown', txt('count-culled'), '3 files');
+  eq('Culled size shown', txt('size-culled'), P.fmtBytes(bytesOf(['DSC0001.JPG', 'DSC0003.JPG', 'DSC0007.JPG'])));
+  eq('Button now says "Change folder"', $('#zone-culled .pick').textContent, 'Change folder');
+  eq('Clear button visible', $('#zone-culled .clear').hidden, false);
+  ok('Zero ARW chip is dimmed', [...doc.querySelectorAll('#zone-culled .chip.zero')].some(c => c.textContent === '0 ARW'));
+  ok('Hidden file chip uses friendly wording', doc.querySelector('#zone-culled .chips').textContent.includes('1 hidden system file'));
+  eq('Hint asks for step 2', hint(), 'Now pick the “Photos to be culled” folder (step 2).');
+
+  win.showDirectoryPicker = async opts => { pickerCalls.push(opts); return target; };
+  $('#zone-target .pick').click();
+  await until(() => txt('count-target'));
+  await P.idle();
+  eq('Target picker asks for read-write', pickerCalls.at(-1).mode, 'readwrite');
+  eq('Target count shown', txt('count-target'), '10 files');
+  eq('Keep count', txt('keep-count'), '3');
+  eq('Remove count', txt('remove-count'), '6');
+  eq('Remove size shown', txt('remove-size'), P.fmtBytes(bytesOf(expectedRemoved)));
+  eq('Keep size shown', txt('keep-size'), P.fmtBytes(bytesOf(['DSC0001.ARW', 'DSC0003.ARW', 'DSC0007.ARW'])));
+  ok('Direction explained (JPGs → keep ARW)', /JPGs.*ARW/.test($('#direction').textContent) && !$('#direction').hidden);
+  eq('No warnings for a good match', $('#warnings').textContent, '');
+  eq('Buttons enabled, no hint', [btnState(), hint()], [[false, false], '']);
+
+  await clearFolder('culled');
+  eq('Clear resets the box', [$('#zone-culled .pick').textContent, $('#zone-culled .clear').hidden], ['Choose folder', true]);
+  eq('Hint asks for step 1 after clearing', hint(), 'Now pick your “Culled photos” folder (step 1).');
+  await setFolder('culled', culled);
+
+  // ------------------------------------------------------------------
+  section('Errors and drag & drop feedback');
+  const dt = new win.DataTransfer();
+  dt.items.add(new win.File(['x'], 'photo.jpg', { type: 'image/jpeg' }));
+  $('#zone-target').dispatchEvent(new win.DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  await until(() => zoneMsg('target'));
+  ok('Dropping a file shows the error inside that box', zoneMsg('target').length > 0, `zone msg: "${zoneMsg('target')}"`);
+  eq('…and not in the bottom status line', $('#status').textContent, '');
+  eq('The other box shows no error', zoneMsg('culled'), '');
+  eq('Folder selection unchanged after bad drop', txt('count-target'), '10 files');
+
+  const dt2 = new win.DataTransfer();
+  dt2.items.add(new win.File(['x'], 'a.jpg'));
+  doc.body.dispatchEvent(new win.DragEvent('dragenter', { dataTransfer: dt2, bubbles: true }));
+  eq('Dragging over the page highlights both boxes', doc.body.classList.contains('dragging'), true);
+  win.dispatchEvent(new win.DragEvent('drop', { dataTransfer: dt2, bubbles: true, cancelable: true }));
+  eq('Highlight removed after drop', doc.body.classList.contains('dragging'), false);
+  await setFolder('target', target);
+  eq('Picking a folder clears the old error', zoneMsg('target'), '');
+
+  // ------------------------------------------------------------------
+  section('Move to _rejected + Undo');
+  let res = await cull({ mode: 'move', skipConfirm: true });
+  eq('Move: moved 6, none failed', [res.done, res.failed.length], [6, 0]);
+  eq('Move: target keeps only matches + untouched files', await names(target), expectedKept);
+  let rejected = await target.getDirectoryHandle(REJECTED_DIR);
+  eq('Move: removed files are in _rejected', await names(rejected), expectedRemoved);
+  eq('Move: file content preserved', await read(rejected, 'DSC0004.ARW'), content('DSC0004.ARW'));
+  eq('Move: culled folder untouched', await names(culled), culledFiles.slice().sort());
+  eq('Result card title', txt('result-title'), `Moved 6 files (${P.fmtBytes(bytesOf(expectedRemoved))}) to “_rejected”.`);
+  ok('Result card names the file manager', $('#result').textContent.includes(P.platformNames().fm));
+  ok('Undo button shown', $('#undo-btn') && !$('#undo-btn').disabled);
+  eq('Target count refreshed (subfolder not counted)', txt('count-target'), '4 files');
+  eq('Buttons disabled + explained when nothing is left', [btnState(), hint()], [[true, true], 'Nothing to remove. This folder is already clean.']);
+
+  res = await cull({ mode: 'move', skipConfirm: true });
+  eq('Second run is a no-op', res, undefined);
+  eq('_rejected unchanged after second run', await names(rejected), expectedRemoved);
+
+  let u = await undo();
+  eq('Undo: restored 6', [u.restored, u.failed], [6, 0]);
+  eq('Undo: target back to original', await names(target), targetFiles.slice().sort());
+  eq('Undo: empty _rejected folder removed', await dirs(target), []);
+  ok('Undo: result says restored', txt('result-title').startsWith('Restored 6 files'));
+  eq('Undo: button gone afterwards', $('#undo-btn'), null);
+  eq('Undo: preview back to 6 to remove', txt('remove-count'), '6');
+
+  // ------------------------------------------------------------------
+  section('Copy fallback, name clash, undo keeps older rejects');
+  options.forceCopy = true;
+  target = await mk('to-be-culled', targetFiles);
+  rejected = await target.getDirectoryHandle(REJECTED_DIR, { create: true });
+  await writeFile(rejected, 'DSC0002.ARW', 'older reject');
+  await setFolder('target', target);
+  res = await cull({ mode: 'move', skipConfirm: true });
+  options.forceCopy = false;
+  eq('Copy fallback: moved 6, none failed', [res.done, res.failed.length], [6, 0]);
+  eq('Copy fallback: originals removed from target', await names(target), expectedKept);
+  eq('Copy fallback: clash saved as "name (1).ext"', await names(rejected),
+     ['DSC0001.JPG', 'DSC0002 (1).ARW', 'DSC0002.ARW', 'DSC0002.JPG', 'DSC0004.ARW', 'DSC0005.ARW', 'DSC0006.ARW']);
+  eq('Copy fallback: existing reject not overwritten', await read(rejected, 'DSC0002.ARW'), 'older reject');
+  eq('Copy fallback: copied content intact', await read(rejected, 'DSC0002 (1).ARW'), content('DSC0002.ARW'));
+  u = await undo();
+  eq('Undo after clash: all originals back under their own names', await names(target), targetFiles.slice().sort());
+  eq('Undo after clash: restored content is right', await read(target, 'DSC0002.ARW'), content('DSC0002.ARW'));
+  eq('Undo after clash: older reject still in _rejected (folder kept)', await names(rejected), ['DSC0002.ARW']);
+
+  // ------------------------------------------------------------------
+  section('Long runs: progress, cancel, leave-page warning');
+  target = await mk('to-be-culled', targetFiles);
+  await setFolder('target', target);
+  const seen = {};
+  options.onFileDone = n => {
+    if (n === 1) {
+      const ev = new win.Event('beforeunload', { cancelable: true });
+      win.dispatchEvent(ev);
+      seen.unloadBlocked = ev.defaultPrevented;
+      seen.title = doc.title;
+      seen.detail = $('#run-detail').textContent;
+      seen.runVisible = !$('#run').hidden;
+      seen.actionsHidden = $('#actions').hidden;
+    }
+    if (n === 2) P.cancel();
+  };
+  res = await cull({ mode: 'move', skipConfirm: true });
+  options.onFileDone = null;
+  eq('Leaving the page mid-run asks for confirmation', seen.unloadBlocked, true);
+  ok('Tab title shows progress', /^\d+% moving · Photo Culler$/.test(seen.title), seen.title);
+  ok('Progress detail shows files and bytes', /^1 of 6 files · .+ of .+/.test(seen.detail), seen.detail);
+  eq('Progress panel replaces the buttons while running', [seen.runVisible, seen.actionsHidden], [true, true]);
+  eq('Cancel stops after the current file', [res.done, res.cancelled], [2, true]);
+  eq('Title restored after run', doc.title, 'Photo Culler');
+  ok('Result says cancelled', txt('result-title').startsWith('Cancelled. Moved 2 of 6 files'));
+  eq('Remaining files still to remove', txt('remove-count'), '4');
+  const ev2 = new win.Event('beforeunload', { cancelable: true });
+  win.dispatchEvent(ev2);
+  eq('No leave-page warning when idle', ev2.defaultPrevented, false);
+  u = await undo();
+  eq('Undo after cancel restores the 2 moved files', [u.restored, await names(target)], [2, targetFiles.slice().sort()]);
+
+  // ------------------------------------------------------------------
+  section('Permanent delete');
+  res = await cull({ mode: 'delete', skipConfirm: true });
+  eq('Delete: deleted 6, none failed', [res.done, res.failed.length], [6, 0]);
+  eq('Delete: target contents after delete', await names(target), expectedKept);
+  eq('Delete: no _rejected folder created', await dirs(target), []);
+  eq('Delete: no undo offered', $('#undo-btn'), null);
+
+  // ------------------------------------------------------------------
+  section('Sidecar files');
+  const scFiles = [...targetFiles, 'DSC0002.xmp', 'DSC0005.ARW.xmp', 'DSC0099.xmp'];
+  target = await mk('to-be-culled', scFiles);
+  await setFolder('target', target);
+  eq('Sidecars on: 8 to remove incl. 2 sidecars', [txt('remove-count'), $('.stat.del small')?.textContent.split(', ')[1]], ['8', 'including 2 sidecar files']);
+  await setSidecars(false);
+  eq('Sidecars off: back to 6', txt('remove-count'), '6');
+  await setSidecars(true);
+  await cull({ mode: 'move', skipConfirm: true });
+  eq('Sidecars moved with their photos', await names(await target.getDirectoryHandle(REJECTED_DIR)),
+     [...expectedRemoved, 'DSC0002.xmp', 'DSC0005.ARW.xmp'].sort());
+  ok('Sidecar of a kept photo and orphan sidecar stay', (await names(target)).includes('DSC0001.xmp') && (await names(target)).includes('DSC0099.xmp'));
+
+  // ------------------------------------------------------------------
+  section('Automatic rescan');
+  options.autoRescanGapMs = 0;
+  target = await mk('to-be-culled', targetFiles);
+  await setFolder('target', target);
+  await writeFile(target, 'DSC0999.ARW', 'new');
+  win.dispatchEvent(new win.Event('focus'));
+  await P.idle();
+  eq('Coming back to the tab picks up new files', [txt('count-target'), txt('remove-count')], ['11 files', '7']);
+  const openBefore = $('details[data-key="remove"]').open;
+  $('details[data-key="keep"]').open = true;
+  await sleep(20);
+  win.dispatchEvent(new win.Event('focus'));
+  await P.idle();
+  eq('Unchanged rescan keeps opened lists open', [$('details[data-key="keep"]').open, $('details[data-key="remove"]').open], [true, openBefore]);
+
+  const gone = await mk('gone', ['A.arw']);
+  await setFolder('target', gone);
+  await root.removeEntry('gone', { recursive: true });
+  win.dispatchEvent(new win.Event('focus'));
+  await P.idle();
+  ok('Folder that disappeared shows an error in its box', zoneMsg('target').includes('any more'), zoneMsg('target'));
+  eq('…and the box resets', $('#zone-target .pick').textContent, 'Choose folder');
+  options.autoRescanGapMs = 1000;
+
+  // ------------------------------------------------------------------
+  section('Warnings for likely mistakes');
+  await setFolder('culled', await mk('culled-x', ['X1.jpg', 'X2.jpg']));
+  await setFolder('target', await mk('target-y', ['Y1.arw', 'Y2.arw']));
+  ok('Nothing matched → strong warning', has('warn-no-match'), $('#warnings').innerHTML);
+  eq('Nothing matched → Move allowed, Delete off', btnState(), [false, true]);
+  ok('Nothing matched → hint explains why', hint().includes('Delete permanently is turned off'));
+  res = await cull({ mode: 'delete', skipConfirm: true });
+  eq('Nothing matched → delete refused', [res, (await names(await root.getDirectoryHandle('target-y')))], [undefined, ['Y1.arw', 'Y2.arw']]);
+
+  await setFolder('culled', await mk('culled-low', ['A.jpg', 'B.jpg', 'C.jpg']));
+  await setFolder('target', await mk('target-low', ['A.arw', 'Z.arw']));
+  ok('Few matches → soft warning', has('warn-low-match') && txt('warn-low-match').includes('Only 1 of your 3 culled photos has'), $('#warnings').textContent);
+
+  const p1 = await (await mk('parent1', [])).getDirectoryHandle('DCIM', { create: true });
+  const p2 = await (await mk('parent2', [])).getDirectoryHandle('DCIM', { create: true });
+  await writeFile(p1, 'A.jpg', 'a'); await writeFile(p2, 'A.arw', 'a'); await writeFile(p2, 'B.arw', 'b');
+  await setFolder('culled', p1); await setFolder('target', p2);
+  ok('Same folder name → warning', has('warn-same-name'), $('#warnings').textContent);
+
+  const c3 = await mk('culled-empty', ['notes.txt']);
+  const t3 = await mk('target-safe', ['A.jpg', 'B.arw']);
+  await setFolder('culled', c3); await setFolder('target', t3);
+  eq('No photos in culled → both disabled', btnState(), [true, true]);
+  ok('No photos in culled → warning shown', has('warn-no-culled'));
+  await cull({ mode: 'move', skipConfirm: true });
+  await cull({ mode: 'delete', skipConfirm: true });
+  eq('No photos in culled → nothing removed', [await names(t3), await dirs(t3)], [['A.jpg', 'B.arw'], []]);
+
+  const same = await mk('same', ['A.jpg', 'A.arw']);
+  await setFolder('culled', same); await setFolder('target', same);
+  eq('Same folder twice → both disabled', btnState(), [true, true]);
+  ok('Same folder twice → explained', has('warn-same-folder') && hint().includes('same folder'));
+
+  // ------------------------------------------------------------------
+  section('Reverse direction + thumbnails');
+  const tc = await mk('culled-raw', ['IMG_1.arw']);
+  const tt = await mk('target-jpg', []);
+  await writeFile(tt, 'IMG_1.jpg', await jpegBytes(300, 200, '#2a6'));
+  await writeFile(tt, 'IMG_9.jpg', await jpegBytes(300, 200, '#a26'));
+  await writeFile(tt, 'IMG_8.ARW', tiffWithJpeg(await jpegBytes(240, 160, '#26a')));
+  await writeFile(tt, 'IMG_7.ARW', 'not a real raw file');
+  await setFolder('culled', tc); await setFolder('target', tt);
+  ok('Direction explained (ARWs → keep JPG)', /ARWs.*JPG/.test($('#direction').textContent));
+  eq('Reverse: keeps IMG_1.jpg only', txt('keep-count'), '1');
+  $('details[data-key="remove"]').open = true;
+  $('[data-view="thumbs"]').click();
+  const thumbs = () => [...doc.querySelectorAll('.thumb')];
+  await until(() => thumbs().length && thumbs().every(t => t.dataset.state));
+  const states = Object.fromEntries(thumbs().map(t => [t.dataset.name, t.dataset.state]));
+  eq('Thumbnails: JPG and ARW preview load, broken ARW shows "No preview"', states,
+     { 'IMG_7.ARW': 'failed', 'IMG_8.ARW': 'loaded', 'IMG_9.jpg': 'loaded' });
+  ok('Thumbnail is drawn', doc.querySelector('.thumb[data-name="IMG_9.jpg"] canvas')?.width > 0);
+  $('[data-view="list"]').click();
+  ok('Switch back to list view', doc.querySelector('#remove-view .list'));
+  await cull({ mode: 'move', skipConfirm: true });
+  eq('Reverse: only the matching JPG remains', await names(tt), ['IMG_1.jpg']);
+
+  // ------------------------------------------------------------------
+  section('Large folder');
+  const big = Array.from({ length: 1005 }, (_, i) => `DSC${String(i).padStart(5, '0')}.ARW`);
+  const bigDir = await mk('big', []);
+  await Promise.all(big.map(n => bigDir.getFileHandle(n, { create: true })));
+  const t0 = performance.now();
+  await setFolder('target', bigDir);
+  const ms = Math.round(performance.now() - t0);
+  eq('1,005 files shown with a thousands separator', txt('count-target'), `${(1005).toLocaleString()} files`);
+  ok(`Reading 1,005 files is quick (${ms} ms)`, ms < 5000);
+  $('details[data-key="remove"]').open = true;
+  $('[data-view="thumbs"]').click();
+  eq('Thumbnails render one page of 60', [thumbs().length, $('button.more').textContent], [60, `Show more (${(945).toLocaleString()} left)`]);
+  $('button.more').click();
+  eq('"Show more" adds the next 60', thumbs().length, 120);
+  $('[data-view="list"]').click();
+
+  // cleanup
+  await clearFolder('culled'); await clearFolder('target');
+  for (const d of new Set(created)) try { await root.removeEntry(d, { recursive: true }); } catch {}
+
+  const failed = results.filter(r => !r.ok).length;
+  document.getElementById('summary').innerHTML =
+    `<b class="${failed ? 'fail' : 'pass'}">${results.length - failed}/${results.length} passed</b>`;
+  window.testResults = { passed: results.length - failed, failed, results };
+}
+run().catch(err => {
+  log(false, 'Test run crashed', err.stack || String(err));
+  document.getElementById('summary').innerHTML = '<b class="fail">Crashed</b>';
+  window.testResults = { crashed: String(err.stack || err), results };
+});
+</script>
+</body>
+</html>

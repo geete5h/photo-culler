@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Culler</title>
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --surface: #ffffff;
+    --surface-2: #f0eee9;
+    --text: #1d1c1a;
+    --muted: #65625a;
+    --border: #d9d6ce;
+    --accent: #2f6fdb;
+    --accent-soft: #e4edfb;
+    --danger: #c23a2b;
+    --danger-soft: #fbe9e6;
+    --ok: #2e7d4f;
+    --ok-soft: #e3f3e8;
+    --warn: #8a5f00;
+    --warn-soft: #fbf1d9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #171716;
+      --surface: #21201e;
+      --surface-2: #2a2926;
+      --text: #ecebe7;
+      --muted: #a8a59c;
+      --border: #3a3935;
+      --accent: #6b9cf0;
+      --accent-soft: #1f2c44;
+      --danger: #ef6b5b;
+      --danger-soft: #3d201c;
+      --ok: #62c28a;
+      --ok-soft: #1a3325;
+      --warn: #e0b04a;
+      --warn-soft: #3a2f16;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1000px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 24px; max-width: 72ch; }
+  code { font: .92em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  .banner {
+    padding: 12px 14px; border-radius: 8px; margin-bottom: 20px;
+    background: var(--warn-soft); color: var(--text); border: 1px solid var(--warn); border-left-width: 4px;
+  }
+
+  /* ---- Steps 1 and 2 ---- */
+  .grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: stretch; }
+  .flow { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 76px; color: var(--muted); font-size: 12px; text-align: center; }
+  .flow .arrow { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); border: 1px solid var(--border); color: var(--accent); }
+  @media (max-width: 760px) {
+    .grid { grid-template-columns: 1fr; }
+    .flow { flex-direction: row; width: auto; }
+    .flow .arrow svg { transform: rotate(90deg); }
+  }
+  .step { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #fff; font-size: 13px; font-weight: 700; }
+  .step.done { background: var(--ok); }
+
+  .zone {
+    position: relative; cursor: pointer;
+    background: var(--surface);
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 18px 20px 20px;
+    min-height: 250px;
+    display: flex; flex-direction: column; gap: 12px;
+    transition: border-color .15s, background .15s;
+  }
+  .zone:hover { border-color: var(--accent); }
+  .zone.set { border-style: solid; }
+  .zone-head { display: flex; gap: 10px; align-items: flex-start; }
+  .zone-head h2 { font-size: 17px; line-height: 26px; margin: 0; }
+  .tag { margin: 0; font-size: 13px; color: var(--muted); }
+  .icon-btn { margin-left: auto; padding: 2px 9px; font-size: 18px; line-height: 1.2; background: transparent; border-color: transparent; color: var(--muted); }
+  .icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
+  .body { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+  .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; color: var(--muted); font-size: 14px; }
+  .empty svg { color: var(--border); margin-bottom: 4px; }
+  .empty b { color: var(--text); font-weight: 600; }
+  .folder { display: flex; gap: 8px; align-items: center; font-weight: 600; word-break: break-all; }
+  .folder svg { flex: none; color: var(--accent); }
+  .count-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .count { font-size: 40px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .count small, .size { font-size: 14px; font-weight: 400; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text); border: 1px solid transparent; }
+  .chip.zero { background: transparent; border-color: var(--border); color: var(--muted); }
+  .zone-msg { margin: 0; font-size: 13px; padding: 6px 10px; border-radius: 6px; background: var(--danger-soft); color: var(--text); border-left: 3px solid var(--danger); cursor: default; }
+  .zone .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .drop-overlay {
+    position: absolute; inset: 0; border-radius: 10px; display: none; place-items: center;
+    font-weight: 600; color: var(--accent); pointer-events: none;
+    background: color-mix(in srgb, var(--surface) 82%, transparent);
+  }
+  body.dragging .zone { border-color: var(--accent); border-style: dashed; }
+  body.dragging .drop-overlay { display: grid; }
+  .zone.drag { background: var(--accent-soft); }
+  .zone.drag .drop-overlay { background: color-mix(in srgb, var(--accent-soft) 88%, transparent); }
+  body.unsupported .zone, body.unsupported .flow { opacity: .5; pointer-events: none; }
+
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; padding: 8px 14px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.big { font-weight: 600; padding: 10px 18px; }
+  button.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+  button.danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger); }
+  button.link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; font-size: 14px; }
+
+  /* ---- Step 3 ---- */
+  .panel { margin-top: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .panel-head h2 { font-size: 17px; margin: 0; }
+  .panel-head .link { margin-left: auto; }
+  .direction { margin: 0 0 12px; }
+  .callout { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; border-left: 4px solid; font-size: 14px; }
+  .callout b { display: block; }
+  .callout.warn { background: var(--warn-soft); border-color: var(--warn); }
+  .callout.err { background: var(--danger-soft); border-color: var(--danger); }
+  .placeholder { color: var(--muted); margin: 0; }
+  .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .stat { flex: 1 1 150px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); }
+  .stat b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+  .stat > span, .stat > small { display: block; font-size: 12px; color: var(--muted); }
+  .stat > span { color: var(--text); }
+  .stat.keep { background: var(--ok-soft); } .stat.keep b { color: var(--ok); }
+  .stat.del { background: var(--danger-soft); } .stat.del b { color: var(--danger); }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; color: var(--muted); }
+  .list {
+    max-height: 280px; overflow: auto; margin-top: 6px; padding: 8px 10px;
+    font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--surface-2); border-radius: 8px;
+  }
+  .list .r { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+  .list .r.why { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .list .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list em, .list .sz { color: var(--muted); font-style: normal; text-align: right; }
+  .list .sz { min-width: 64px; }
+  .view-toggle { display: inline-flex; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .view-toggle button { border: 0; border-radius: 0; padding: 4px 12px; font-size: 13px; background: transparent; }
+  .view-toggle button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; max-height: 440px; overflow: auto; margin-top: 8px; padding: 2px; }
+  .thumbs figure { margin: 0; min-width: 0; }
+  .thumb { aspect-ratio: 3 / 2; display: grid; place-items: center; overflow: hidden; border-radius: 6px; background: var(--surface-2); color: var(--muted); font-size: 11px; }
+  .thumb canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumbs figcaption { margin-top: 3px; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button.more { margin-top: 8px; font-size: 13px; padding: 4px 12px; }
+  .opt { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 0; font-size: 14px; cursor: pointer; }
+  .opt input { margin-top: 4px; }
+  .opt small { display: block; color: var(--muted); font-size: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+  .hint-line { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+  .hint-line:empty { display: none; }
+  .run { margin-top: 16px; padding: 14px 16px; border-radius: 10px; background: var(--surface-2); }
+  .run-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .run progress { width: 100%; height: 12px; accent-color: var(--accent); }
+  .run-detail { margin-top: 6px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .result { margin-top: 16px; padding: 14px 16px; border-radius: 10px; border: 1px solid; border-left-width: 4px; display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .result.ok { background: var(--ok-soft); border-color: var(--ok); }
+  .result.err { background: var(--danger-soft); border-color: var(--danger); }
+  .result .text { flex: 1 1 320px; }
+  .result p { margin: 4px 0 0; font-size: 14px; color: var(--muted); }
+  .msg { margin: 10px 0 0; font-size: 14px; }
+  .msg:empty { display: none; }
+  .msg.err { color: var(--danger); } .msg.ok { color: var(--ok); } .msg.warn { color: var(--warn); }
+
+  details.rules > summary { color: var(--text); }
+  details.rules > summary h2 { display: inline; font-size: 17px; margin: 0; }
+  .rules ul { color: var(--muted); font-size: 13px; margin: 12px 0 0; padding-left: 18px; }
+  .rules li + li { margin-top: 4px; }
+
+  .credit { margin-top: 32px; text-align: center; font-size: 13px; color: var(--muted); }
+  .credit .heart { color: var(--danger); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Photo Culler</h1>
+  <p class="sub">Keep only the counterpart files (JPG ↔ ARW) of your culled photos. Everything else in “Photos to be culled” is moved into a <code>_rejected</code> subfolder for you to review, or deleted permanently if you prefer.</p>
+
+  <div id="unsupported" class="banner" role="alert" hidden></div>
+
+  <div class="grid">
+    <section class="zone" id="zone-culled" data-role="culled">
+      <div class="zone-head">
+        <span class="step" aria-hidden="true">1</span>
+        <div>
+          <h2>Culled photos</h2>
+          <p class="tag">Your keepers. Only read, never changed.</p>
+        </div>
+        <button class="icon-btn clear" aria-label="Clear the Culled photos folder" title="Clear" hidden>×</button>
+      </div>
+      <div class="body"></div>
+      <p class="zone-msg" role="alert" hidden></p>
+      <div class="actions"><button class="primary pick">Choose folder</button></div>
+      <div class="drop-overlay">Drop folder here</div>
+    </section>
+
+    <div class="flow" aria-hidden="true">
+      <div class="arrow"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10h12M11 5l5 5-5 5"/></svg></div>
+      <span>matched by file name</span>
+    </div>
+
+    <section class="zone" id="zone-target" data-role="target">
+      <div class="zone-head">
+        <span class="step" aria-hidden="true">2</span>
+        <div>
+          <h2>Photos to be culled</h2>
+          <p class="tag">The folder to clean up. Unmatched photos are moved out.</p>
+        </div>
+        <button class="icon-btn clear" aria-label="Clear the Photos to be culled folder" title="Clear" hidden>×</button>
+      </div>
+      <div class="body"></div>
+      <p class="zone-msg" role="alert" hidden></p>
+      <div class="actions"><button class="primary pick">Choose folder</button></div>
+      <div class="drop-overlay">Drop folder here</div>
+    </section>
+  </div>
+
+  <section class="panel" id="plan-panel">
+    <div class="panel-head">
+      <span class="step" aria-hidden="true">3</span>
+      <h2>Review and clean up</h2>
+      <button class="link" id="help-link">How matching works</button>
+    </div>
+    <p class="direction" id="direction" hidden></p>
+    <div id="warnings"></div>
+    <div id="plan"></div>
+
+    <label class="opt">
+      <input type="checkbox" id="opt-sidecars" checked>
+      <span>Also remove sidecar files of removed photos
+        <small><code>.xmp</code>, <code>.dop</code> and <code>.pp3</code> edit files. A sidecar stays if any photo with the same name is kept.</small>
+      </span>
+    </label>
+
+    <div class="row" id="actions">
+      <button class="primary big" id="move-btn" disabled>Move to _rejected folder</button>
+      <button class="danger" id="delete-btn" disabled>Delete permanently</button>
+      <button id="rescan-btn" disabled>Rescan folders</button>
+    </div>
+    <p class="hint-line" id="action-hint" aria-live="polite"></p>
+
+    <div class="run" id="run" hidden>
+      <div class="run-top">
+        <b id="run-label">Moving files…</b>
+        <button id="cancel-btn">Cancel</button>
+      </div>
+      <progress id="progress" value="0" max="1" aria-labelledby="run-label"></progress>
+      <div class="run-detail" id="run-detail" aria-live="polite"></div>
+    </div>
+
+    <div class="result" id="result" hidden></div>
+    <p class="msg" id="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <details class="panel rules" id="rules">
+    <summary><h2>How matching works</h2></summary>
+    <ul>
+      <li>Names are compared without the extension and without regard to case, so <code>DSC01234.JPG</code> matches <code>dsc01234.arw</code>.</li>
+      <li>If “Culled photos” has <code>DSC01234.jpg</code>, only <code>DSC01234.arw</code> is kept in “Photos to be culled”. If it has <code>DSC01234.arw</code>, only <code>DSC01234.jpg</code> (or <code>.jpeg</code>) is kept.</li>
+      <li>Every other JPG/ARW file in “Photos to be culled” is removed, including files with the same format as the culled one.</li>
+      <li>Sidecar files (<code>DSC01234.xmp</code> or <code>DSC01234.ARW.xmp</code>, also <code>.dop</code> and <code>.pp3</code>) are removed along with their photo when the sidecar option is on. A sidecar that belongs to a kept photo, or to no photo at all, is left alone.</li>
+      <li>Only files directly inside each folder are considered, not files in subfolders. Other file types and hidden system files (<code>.DS_Store</code>, <code>._*</code>) are left alone.</li>
+      <li><b>Move to _rejected folder</b> puts removed files in <code>Photos to be culled/_rejected/</code>. Nothing is deleted, and <b>Undo</b> puts them back. If a file with the same name is already there, the new one is saved as <code>name (1).ext</code>.</li>
+      <li><b>Delete permanently</b> skips that step. Browsers can't use the Trash or Recycle Bin, so those files are gone for good.</li>
+      <li>The folders are read again whenever you come back to this tab, so the preview stays up to date.</li>
+    </ul>
+  </details>
+
+  <footer class="credit">Made with <span class="heart" role="img" aria-label="love">♥</span> by Geetesh Lokhande with help of Claude Opus 5.5</footer>
+</main>
+
+<script>
+/* ---------- Pure logic (no DOM), exposed for tests ---------- */
+const PHOTO_TYPES = { jpg: 'jpg', jpeg: 'jpg', arw: 'arw' };
+const SIDECAR_EXTS = new Set(['xmp', 'dop', 'pp3']);
+const COUNTERPART = { jpg: 'arw', arw: 'jpg' };
+const LABEL = { jpg: 'JPG', arw: 'ARW' };
+
+function splitExt(name) {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? [name.slice(0, dot), name.slice(dot + 1).toLowerCase()] : [name, ''];
+}
+
+// Returns null for hidden files, otherwise { name, base, key, type } where type is
+// 'jpg' | 'arw' | 'sidecar' | 'other'. Sidecars named like "DSC1.ARW.xmp" also get an `owner`.
+function classify(name) {
+  if (name.startsWith('.')) return null;
+  const [base, ext] = splitExt(name);
+  if (PHOTO_TYPES[ext]) return { name, base, key: base.toLowerCase(), type: PHOTO_TYPES[ext] };
+  if (SIDECAR_EXTS.has(ext)) {
+    const [innerBase, innerExt] = splitExt(base);
+    const owner = PHOTO_TYPES[innerExt] ? base.toLowerCase() : null;
+    return { name, base, key: (owner ? innerBase : base).toLowerCase(), owner, type: 'sidecar' };
+  }
+  return { name, base, key: base.toLowerCase(), type: 'other' };
+}
+
+function summarize(names) {
+  const s = { total: 0, jpg: 0, arw: 0, sidecar: 0, other: 0, hidden: 0 };
+  for (const n of names) {
+    const c = classify(n);
+    if (!c) { s.hidden++; continue; }
+    s.total++;
+    s[c.type]++;
+  }
+  return s;
+}
+
+function buildPlan(culledNames, targetNames, { sidecars = false } = {}) {
+  const culled = new Map(); // key -> Set of photo types present in culled folder
+  const culledTypes = new Set();
+  for (const n of culledNames) {
+    const c = classify(n);
+    if (!c || c.type === 'other' || c.type === 'sidecar') continue;
+    if (!culled.has(c.key)) culled.set(c.key, new Set());
+    culled.get(c.key).add(c.type);
+    culledTypes.add(c.type);
+  }
+
+  const keep = [], remove = [], ignored = [], sidecarFiles = [];
+  const keptKeys = new Set(), removedFiles = new Set(), removedByKey = new Map();
+  for (const n of targetNames) {
+    const c = classify(n);
+    if (c && c.type === 'sidecar') { sidecarFiles.push(c); continue; }
+    if (!c || c.type === 'other') { ignored.push(n); continue; }
+    const types = culled.get(c.key);
+    if (types && types.has(COUNTERPART[c.type])) {
+      keep.push(n);
+      keptKeys.add(c.key);
+      continue;
+    }
+    remove.push({ name: n, reason: types
+      ? `culled has .${c.type} for this name, keeping .${COUNTERPART[c.type]} only`
+      : 'not in culled photos' });
+    removedFiles.add(n.toLowerCase());
+    if (!removedByKey.has(c.key)) removedByKey.set(c.key, []);
+    removedByKey.get(c.key).push(n);
+  }
+
+  // A sidecar goes with its photo: "DSC1.ARW.xmp" follows DSC1.ARW; "DSC1.xmp" goes only if
+  // some DSC1 photo is removed and none is kept.
+  let sidecarCount = 0;
+  for (const c of sidecarFiles) {
+    let reason = null;
+    if (sidecars && c.owner && removedFiles.has(c.owner)) {
+      reason = `sidecar of ${c.base}`;
+    } else if (sidecars && !c.owner && removedByKey.has(c.key) && !keptKeys.has(c.key)) {
+      reason = `sidecar of ${removedByKey.get(c.key).join(', ')}`;
+    }
+    if (reason) { remove.push({ name: c.name, reason, sidecar: true }); sidecarCount++; }
+    else ignored.push(c.name);
+  }
+
+  let matchedCount = 0;
+  for (const key of culled.keys()) if (keptKeys.has(key)) matchedCount++;
+
+  const byName = (a, b) => (a.name || a).localeCompare(b.name || b, undefined, { numeric: true });
+  keep.sort(byName); remove.sort(byName); ignored.sort(byName);
+  return { keep, remove, ignored, culledPhotoCount: culled.size, culledTypes: [...culledTypes].sort(), matchedCount, sidecarCount };
+}
+
+/* ---------- Formatting ---------- */
+const numberFormat = new Intl.NumberFormat();
+const fmtNum = n => numberFormat.format(n);
+const plural = (n, word, many = word + 's') => `${fmtNum(n)} ${n === 1 ? word : many}`;
+
+function fmtBytes(b) {
+  if (b < 1000) return b === 1 ? '1 byte' : `${b} bytes`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = b / 1000, i = 0;
+  while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+function fmtDuration(sec) {
+  if (sec < 10) return 'a few seconds';
+  if (sec < 60) return `${Math.round(sec / 5) * 5} sec`;
+  if (sec < 3600) return `${Math.round(sec / 60)} min`;
+  return `${Math.floor(sec / 3600)} h ${Math.round((sec % 3600) / 60)} min`;
+}
+
+function platformNames(p = navigator.userAgentData?.platform || navigator.platform || '') {
+  if (/mac/i.test(p)) return { fm: 'Finder', trash: 'Trash' };
+  if (/win/i.test(p)) return { fm: 'File Explorer', trash: 'Recycle Bin' };
+  return { fm: 'your file manager', trash: 'trash' };
+}
+
+function browserName(ua) {
+  if (/iPhone|iPad|iPod|Android/i.test(ua)) return 'mobile';
+  if (/Firefox\//.test(ua)) return 'Firefox';
+  if (/Edg\//.test(ua)) return 'Edge';
+  if (/Chrome\//.test(ua)) return 'Chrome';
+  if (/Safari\//.test(ua)) return 'Safari';
+  return null;
+}
+
+function unsupportedMessage(name) {
+  const fix = 'Open this page in <b>Google Chrome</b>, <b>Microsoft Edge</b>, <b>Brave</b> or <b>Arc</b> on a desktop or laptop computer.';
+  if (name === 'mobile') return `Phone and tablet browsers can't open folders, so Photo Culler only works on a desktop or laptop computer. ${fix}`;
+  if (name === 'Safari' || name === 'Firefox') return `<b>${name}</b> doesn't let web pages open and change folders on your computer. ${fix}`;
+  if (name === 'Chrome' || name === 'Edge') return `This version of <b>${name}</b> can't open folders. Update it, or ask your IT team whether this feature has been turned off.`;
+  return `This browser can't open folders on your computer. ${fix}`;
+}
+
+/* ---------- Embedded previews (ARW and other TIFF-based raw files) ---------- */
+// Walks the first IFDs of a TIFF header and returns the largest embedded JPEG
+// (tags 0x0201 offset / 0x0202 length), or null if there isn't one.
+async function extractEmbeddedJpeg(file) {
+  const head = new DataView(await file.slice(0, 65536).arrayBuffer());
+  if (head.byteLength < 16) return null;
+  const order = head.getUint16(0);
+  if (order !== 0x4949 && order !== 0x4d4d) return null;
+  const le = order === 0x4949;
+  const u16 = o => head.getUint16(o, le), u32 = o => head.getUint32(o, le);
+  if (u16(2) !== 42) return null;
+  const found = [];
+  let ifd = u32(4);
+  for (let hop = 0; ifd && hop < 4 && ifd + 2 <= head.byteLength; hop++) {
+    const count = u16(ifd);
+    let off = 0, len = 0;
+    for (let i = 0; i < count; i++) {
+      const e = ifd + 2 + i * 12;
+      if (e + 12 > head.byteLength) break;
+      const tag = u16(e);
+      if (tag === 0x0201) off = u32(e + 8);
+      if (tag === 0x0202) len = u32(e + 8);
+    }
+    if (off && len && off + len <= file.size) found.push({ off, len });
+    const next = ifd + 2 + count * 12;
+    ifd = next + 4 <= head.byteLength ? u32(next) : 0;
+  }
+  found.sort((a, b) => b.len - a.len);
+  for (const { off, len } of found) {
+    const blob = file.slice(off, off + len, 'image/jpeg');
+    const soi = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+    if (soi[0] === 0xff && soi[1] === 0xd8) return blob;
+  }
+  return null;
+}
+
+/* ---------- File system helpers ---------- */
+async function listFiles(dirHandle) {
+  const handles = [];
+  for await (const handle of dirHandle.values()) {
+    if (handle.kind === 'file') handles.push(handle);
+  }
+  const files = new Array(handles.length);
+  for (let i = 0; i < handles.length; i += 64) {
+    await Promise.all(handles.slice(i, i + 64).map(async (h, j) => {
+      let size = 0;
+      try { size = (await h.getFile()).size; } catch {}
+      files[i + j] = { name: h.name, size };
+    }));
+  }
+  return files;
+}
+
+function makeEntry(handle, files) {
+  return { handle, files, names: files.map(f => f.name), sizes: new Map(files.map(f => [f.name, f.size])) };
+}
+
+async function ensurePermission(handle, mode) {
+  const opts = { mode };
+  if (!handle.queryPermission) return true; // e.g. OPFS handles in tests
+  if ((await handle.queryPermission(opts)) === 'granted') return true;
+  return (await handle.requestPermission(opts)) === 'granted';
+}
+
+const REJECTED_DIR = '_rejected';
+const options = {
+  forceCopy: false,        // tests flip this to exercise the copy-then-delete fallback
+  autoRescanGapMs: 1000,   // minimum time between automatic rescans
+  onFileDone: null,        // test hook, called after each file in a run
+};
+let nativeMoveWorks = null; // null = not tried yet
+
+async function fileExists(dir, name) {
+  try {
+    await dir.getFileHandle(name);
+    return true;
+  } catch (err) {
+    if (err.name === 'NotFoundError') return false;
+    if (err.name === 'TypeMismatchError') return true; // a folder already has that name
+    throw err;
+  }
+}
+
+// "DSC1.ARW" -> "DSC1 (1).ARW" -> "DSC1 (2).ARW" … until the name is free in dir.
+async function freeName(dir, name) {
+  if (!(await fileExists(dir, name))) return name;
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let i = 1; ; i++) {
+    const candidate = `${base} (${i})${ext}`;
+    if (!(await fileExists(dir, candidate))) return candidate;
+  }
+}
+
+async function moveFile(srcDir, name, destDir, wantName = name) {
+  const src = await srcDir.getFileHandle(name);
+  const destName = await freeName(destDir, wantName);
+
+  // Fast path: a real move (a rename on disk). Not every Chrome version supports it for local folders.
+  if (!options.forceCopy && nativeMoveWorks !== false && typeof src.move === 'function') {
+    try {
+      await src.move(destDir, destName);
+      nativeMoveWorks = true;
+      return destName;
+    } catch (err) {
+      if (nativeMoveWorks === true) throw err; // move works here, so this is a real error for this file
+      nativeMoveWorks = false;                 // unsupported; use the copy fallback from now on
+    }
+  }
+
+  // Fallback: copy, check the size matches, and only then delete the original.
+  const file = await src.getFile();
+  const dest = await destDir.getFileHandle(destName, { create: true });
+  try {
+    await file.stream().pipeTo(await dest.createWritable());
+    const copied = await dest.getFile();
+    if (copied.size !== file.size) throw new Error(`copy incomplete (${copied.size} of ${file.size} bytes)`);
+  } catch (err) {
+    try { await destDir.removeEntry(destName); } catch {}
+    throw err;
+  }
+  await srcDir.removeEntry(name);
+  return destName;
+}
+
+/* ---------- App state ---------- */
+const state = {
+  culled: null, target: null,   // { handle, files, names, sizes }
+  plan: null, problem: null,
+  busy: false, cancelRequested: false,
+  scanningRole: null,
+  lastMove: null,               // { targetDir, rejectedDir, createdDir, moved: [{ from, to, size }] }
+  view: 'list',                 // 'list' | 'thumbs' for the files-to-remove section
+  open: {},                     // remembered open/closed state of the preview lists
+  lastSig: null,
+};
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const supported = 'showDirectoryPicker' in window;
+const BASE_TITLE = document.title;
+const osNames = platformNames();
+const sum = arr => arr.reduce((a, b) => a + b, 0);
+
+// All folder reads go through this queue so two scans never race each other.
+let scanChain = Promise.resolve();
+function serial(fn) {
+  const run = scanChain.then(fn, fn);
+  scanChain = run.catch(() => {});
+  return run;
+}
+
+/* ---------- Rendering ---------- */
+const FOLDER_ICON = '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h3.9a2 2 0 0 1 1.4.6L12.2 6h6.3A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>';
+const EMPTY_HTML = `<div class="empty">
+  <svg aria-hidden="true" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h3.9a2 2 0 0 1 1.4.6L12.2 6h6.3A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>
+  <b>Drop a folder here</b><span>or click anywhere in this box to choose one</span></div>`;
+
+function setStatus(text, kind = '') {
+  const el = $('#status');
+  el.textContent = text;
+  el.className = 'msg ' + kind;
+}
+
+function setZoneMsg(role, text) {
+  const el = $(`#zone-${role} .zone-msg`);
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+function renderZone(role) {
+  const zone = $(`#zone-${role}`);
+  const entry = state[role];
+  const body = $('.body', zone);
+  zone.classList.toggle('set', !!entry);
+  $('.step', zone).classList.toggle('done', !!entry);
+  $('.pick', zone).textContent = entry ? 'Change folder' : 'Choose folder';
+  $('.clear', zone).hidden = !entry;
+  if (state.scanningRole === role) {
+    body.innerHTML = '<div class="empty"><b>Reading folder…</b></div>';
+    return;
+  }
+  if (!entry) { body.innerHTML = EMPTY_HTML; return; }
+  const s = summarize(entry.names);
+  const bytes = sum(entry.files.filter(f => classify(f.name)).map(f => f.size));
+  const chips = [
+    [s.jpg, 'JPG'], [s.arw, 'ARW'],
+    s.sidecar ? [s.sidecar, s.sidecar === 1 ? 'sidecar' : 'sidecars'] : null,
+    s.other ? [s.other, 'other'] : null,
+    s.hidden ? [s.hidden, s.hidden === 1 ? 'hidden system file' : 'hidden system files'] : null,
+  ].filter(Boolean).map(([n, label]) => `<span class="chip${n ? '' : ' zero'}">${fmtNum(n)} ${label}</span>`).join('');
+  body.innerHTML = `
+    <div class="folder">${FOLDER_ICON}<span>${esc(entry.handle.name)}</span></div>
+    <div class="count-row">
+      <div class="count" data-testid="count-${role}">${fmtNum(s.total)} <small>${s.total === 1 ? 'file' : 'files'}</small></div>
+      <span class="size" data-testid="size-${role}">${fmtBytes(bytes)}</span>
+    </div>
+    <div class="chips">${chips}</div>`;
+}
+
+function directionHtml(plan) {
+  const t = plan.culledTypes;
+  if (t.length === 1) {
+    return `Your culled photos are <b>${LABEL[t[0]]}s</b>, so only the matching <b>${LABEL[COUNTERPART[t[0]]]}</b> files are kept in “Photos to be culled”.`;
+  }
+  if (t.length === 2) {
+    return 'Your culled photos include both <b>JPGs and ARWs</b>, so each one keeps its counterpart: a culled JPG keeps its ARW, and a culled ARW keeps its JPG.';
+  }
+  return '';
+}
+
+function planWarnings(plan) {
+  const out = [];
+  const want = plan.culledTypes.length === 1 ? LABEL[COUNTERPART[plan.culledTypes[0]]] : 'counterpart';
+  const n = plan.culledPhotoCount;
+  if (n === 0) {
+    out.push({ kind: 'err', id: 'no-culled', title: '“Culled photos” has no JPG or ARW files.',
+      text: 'There is nothing to match against, so every photo would be removed. Pick the folder that holds your keepers.' });
+  } else if (plan.keep.length === 0 && plan.remove.length > 0) {
+    out.push({ kind: 'err', id: 'no-match',
+      title: n === 1 ? `Your culled photo has no matching ${want} file here.` : `None of your ${fmtNum(n)} culled photos has a matching ${want} file here.`,
+      text: `Every photo in “${state.target.handle.name}” would be removed. Did you pick the right folders? Delete permanently is turned off in this case. Move still works and can be undone.` });
+  } else if (plan.matchedCount < n * 0.5) {
+    out.push({ kind: 'warn', id: 'low-match',
+      title: `Only ${fmtNum(plan.matchedCount)} of your ${plural(n, 'culled photo')} ${plan.matchedCount === 1 ? 'has' : 'have'} a matching ${want} file here.`,
+      text: 'The others may be in a different folder. Check that you picked the right one before continuing.' });
+  }
+  const a = state.culled?.handle.name, b = state.target?.handle.name;
+  if (a && b && a.toLowerCase() === b.toLowerCase()) {
+    out.push({ kind: 'warn', id: 'same-name', title: `Both folders are named “${a}”.`,
+      text: 'Browsers only show folder names, not where they are on disk. Make sure these are two different folders.' });
+  }
+  return out;
+}
+
+const calloutHtml = w => `<div class="callout ${w.kind}" data-testid="warn-${w.id}"><b>${esc(w.title)}</b>${esc(w.text)}</div>`;
+
+function sizeOf(name) { return state.target?.sizes.get(name) || 0; }
+
+function listHtml(items, withReason) {
+  if (!items.length) return '<div class="list"><em>none</em></div>';
+  return '<div class="list">' + items.map(i => withReason
+    ? `<div class="r why"><span class="n" title="${esc(i.name)}">${esc(i.name)}</span><em>${esc(i.reason)}</em><span class="sz">${fmtBytes(sizeOf(i.name))}</span></div>`
+    : `<div class="r"><span class="n" title="${esc(i)}">${esc(i)}</span><span class="sz">${fmtBytes(sizeOf(i))}</span></div>`).join('') + '</div>';
+}
+
+function renderPlan() {
+  const { plan, problem } = state;
+  const planEl = $('#plan');
+  const dir = $('#direction');
+  dir.innerHTML = plan ? directionHtml(plan) : '';
+  dir.hidden = !dir.innerHTML;
+  const warnings = plan ? planWarnings(plan) : [];
+  if (problem === 'same') warnings.push({ kind: 'err', id: 'same-folder', title: 'Both boxes point to the same folder.', text: 'Pick two different folders.' });
+  $('#warnings').innerHTML = warnings.map(calloutHtml).join('');
+
+  if (!plan) {
+    state.lastSig = null;
+    planEl.innerHTML = problem ? '' : '<p class="placeholder">Pick both folders to see which files will be kept and removed.</p>';
+    return;
+  }
+  plan.keepBytes = sum(plan.keep.map(sizeOf));
+  plan.removeBytes = sum(plan.remove.map(r => sizeOf(r.name)));
+
+  // Skip re-rendering when nothing changed, so open lists and scroll positions survive auto-rescans.
+  const sig = [state.target.handle.name, plan.keepBytes, plan.removeBytes, plan.keep.join('/'),
+    plan.remove.map(r => r.name + r.reason).join('/'), plan.ignored.join('/')].join('|');
+  if (sig === state.lastSig) return;
+  state.lastSig = sig;
+
+  // A <details> rendered open fires one "toggle" event right away; data-fresh lets the listener skip it.
+  const open = (key, dflt) => (state.open[key] ?? dflt) ? 'open data-fresh' : '';
+  const sidecarNote = plan.sidecarCount ? `, including ${plural(plan.sidecarCount, 'sidecar file')}` : '';
+  planEl.innerHTML = `
+    <div class="stats">
+      <div class="stat keep"><b data-testid="keep-count">${fmtNum(plan.keep.length)}</b><span>will be kept</span><small data-testid="keep-size">${fmtBytes(plan.keepBytes)}</small></div>
+      <div class="stat del"><b data-testid="remove-count">${fmtNum(plan.remove.length)}</b><span>will be removed</span><small><span data-testid="remove-size">${fmtBytes(plan.removeBytes)}</span>${sidecarNote}</small></div>
+      <div class="stat"><b>${fmtNum(plan.ignored.length)}</b><span>left alone</span><small>other files</small></div>
+    </div>
+    ${plan.remove.length ? `<details data-key="remove" ${open('remove', plan.remove.length <= 50)}>
+      <summary>Files to remove (${fmtNum(plan.remove.length)} · ${fmtBytes(plan.removeBytes)})</summary>
+      <div class="view-toggle" role="group" aria-label="How to show files to remove">
+        <button data-view="list" aria-pressed="false">List</button><button data-view="thumbs" aria-pressed="false">Thumbnails</button>
+      </div>
+      <div id="remove-view"></div>
+    </details>` : ''}
+    <details data-key="keep" ${open('keep', false)}><summary>Files to keep (${fmtNum(plan.keep.length)} · ${fmtBytes(plan.keepBytes)})</summary>${listHtml(plan.keep)}</details>
+    ${plan.ignored.length ? `<details data-key="ignored" ${open('ignored', false)}><summary>Left alone (${fmtNum(plan.ignored.length)})</summary>${listHtml(plan.ignored)}</details>` : ''}`;
+  renderRemoveView();
+}
+
+/* ---------- Thumbnails ---------- */
+const THUMB_PAGE = 60;
+const thumbCache = new Map(); // "name|size|mtime" -> ImageBitmap
+const thumbQueue = [];
+let thumbActive = 0;
+
+async function makeThumb(dir, name) {
+  const file = await (await dir.getFileHandle(name)).getFile();
+  const key = `${name}|${file.size}|${file.lastModified}`;
+  if (thumbCache.has(key)) return thumbCache.get(key);
+  const src = classify(name)?.type === 'jpg' ? file : await extractEmbeddedJpeg(file);
+  if (!src) throw new Error('no preview');
+  const bmp = await createImageBitmap(src, { resizeWidth: 320, resizeQuality: 'medium' });
+  thumbCache.set(key, bmp);
+  return bmp;
+}
+
+function pumpThumbs() {
+  while (thumbActive < 3 && thumbQueue.length) {
+    const div = thumbQueue.shift();
+    if (!div.isConnected) continue;
+    thumbActive++;
+    Promise.resolve(state.target?.handle)
+      .then(dir => makeThumb(dir, div.dataset.name))
+      .then(bmp => {
+        const canvas = document.createElement('canvas');
+        canvas.width = bmp.width; canvas.height = bmp.height;
+        canvas.getContext('2d').drawImage(bmp, 0, 0);
+        div.replaceChildren(canvas);
+        div.dataset.state = 'loaded';
+      })
+      .catch(() => { div.textContent = 'No preview'; div.dataset.state = 'failed'; })
+      .finally(() => { thumbActive--; pumpThumbs(); });
+  }
+}
+
+function renderThumbs(host, items) {
+  host.innerHTML = '';
+  if (!items.length) { host.innerHTML = '<div class="list"><em>No photos to preview.</em></div>'; return; }
+  const grid = document.createElement('div');
+  grid.className = 'thumbs';
+  const more = document.createElement('button');
+  more.className = 'more';
+  host.append(grid, more);
+  // Thumbnails load a page at a time (3 in parallel), so a folder of thousands never decodes everything at once.
+  let shown = 0;
+  const addMore = () => {
+    for (const item of items.slice(shown, shown + THUMB_PAGE)) {
+      const fig = document.createElement('figure');
+      fig.innerHTML = `<div class="thumb" data-name="${esc(item.name)}">Loading…</div><figcaption title="${esc(item.name)}">${esc(item.name)}</figcaption>`;
+      grid.append(fig);
+      thumbQueue.push(fig.firstElementChild);
+    }
+    shown = Math.min(items.length, shown + THUMB_PAGE);
+    more.hidden = shown >= items.length;
+    more.textContent = `Show more (${fmtNum(items.length - shown)} left)`;
+    pumpThumbs();
+  };
+  more.addEventListener('click', addMore);
+  addMore();
+}
+
+function renderRemoveView() {
+  const host = $('#remove-view');
+  if (!host || !state.plan) return;
+  $$('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === state.view)));
+  thumbQueue.length = 0;
+  if (state.view === 'thumbs') renderThumbs(host, state.plan.remove.filter(r => !r.sidecar));
+  else host.innerHTML = listHtml(state.plan.remove, true);
+}
+
+/* ---------- Buttons and hints ---------- */
+function actionState() {
+  const no = hint => ({ move: false, del: false, hint });
+  if (!supported) return no('This browser can’t open folders. See the message at the top of the page.');
+  if (state.busy) return no('');
+  const { culled, target, plan, problem } = state;
+  if (!culled && !target) return no('Pick both folders to get started.');
+  if (!culled) return no('Now pick your “Culled photos” folder (step 1).');
+  if (!target) return no('Now pick the “Photos to be culled” folder (step 2).');
+  if (problem === 'same') return no('Both boxes point to the same folder. Pick two different folders.');
+  if (!plan) return no('');
+  if (plan.culledPhotoCount === 0) return no('“Culled photos” has no JPG or ARW files, so there is nothing to match against.');
+  if (plan.remove.length === 0) return no('Nothing to remove. This folder is already clean.');
+  if (plan.keep.length === 0) return { move: true, del: false, hint: 'Delete permanently is turned off because nothing matched. Move can be undone if you’re sure.' };
+  return { move: true, del: true, hint: '' };
+}
+
+function updateButtons() {
+  const a = actionState();
+  $('#move-btn').disabled = !a.move;
+  $('#delete-btn').disabled = !a.del;
+  $('#action-hint').textContent = a.hint;
+  $('#rescan-btn').disabled = state.busy || !(state.culled || state.target);
+  $('#opt-sidecars').disabled = state.busy;
+  $$('.pick, .clear').forEach(b => b.disabled = state.busy || !supported);
+  const undo = $('#undo-btn');
+  if (undo) undo.disabled = state.busy;
+}
+
+/* ---------- Folder selection and scanning ---------- */
+async function refreshPlan() {
+  state.plan = null;
+  state.problem = null;
+  const { culled, target } = state;
+  if (culled && target) {
+    if (await culled.handle.isSameEntry(target.handle)) state.problem = 'same';
+    else state.plan = buildPlan(culled.names, target.names, { sidecars: $('#opt-sidecars').checked });
+  }
+  renderPlan();
+  updateButtons();
+}
+
+async function forgetUndoUnless(handle) {
+  const lm = state.lastMove;
+  if (lm && !(handle && await lm.targetDir.isSameEntry(handle))) {
+    state.lastMove = null;
+    hideResult();
+  }
+}
+
+function setFolder(role, handle) {
+  return serial(async () => {
+    setZoneMsg(role, '');
+    setStatus('');
+    state.scanningRole = role;
+    renderZone(role);
+    try {
+      const files = await listFiles(handle);
+      if (role === 'target') {
+        await forgetUndoUnless(handle);
+        if (!state.target || !(await state.target.handle.isSameEntry(handle))) thumbCache.clear();
+      }
+      state[role] = makeEntry(handle, files);
+    } catch (err) {
+      setZoneMsg(role, `Couldn't read this folder: ${err.message}`);
+    } finally {
+      state.scanningRole = null;
+      renderZone(role);
+    }
+    await refreshPlan();
+  });
+}
+
+function clearFolder(role) {
+  if (state.busy) return;
+  return serial(async () => {
+    state[role] = null;
+    if (role === 'target') { await forgetUndoUnless(null); thumbCache.clear(); }
+    setZoneMsg(role, '');
+    renderZone(role);
+    await refreshPlan();
+  });
+}
+
+async function doRescan({ force = false } = {}) {
+  if (state.busy && !force) return;
+  for (const role of ['culled', 'target']) {
+    const entry = state[role];
+    if (!entry) continue;
+    try {
+      state[role] = makeEntry(entry.handle, await listFiles(entry.handle));
+    } catch {
+      state[role] = null;
+      if (role === 'target') await forgetUndoUnless(null);
+      setZoneMsg(role, `Can't read “${entry.handle.name}” any more. It may have been moved or renamed, or the drive was disconnected. Pick it again.`);
+    }
+    renderZone(role);
+  }
+  await refreshPlan();
+}
+
+const rescan = () => serial(() => doRescan());
+
+let lastAutoRescan = 0;
+function autoRescan() {
+  if (state.busy || !(state.culled || state.target)) return;
+  if (Date.now() - lastAutoRescan < options.autoRescanGapMs) return;
+  lastAutoRescan = Date.now();
+  return rescan();
+}
+
+/* ---------- Running a batch (move, delete, undo) ---------- */
+async function runBatch({ verb, items, sizeOfItem, work }) {
+  state.busy = true;
+  state.cancelRequested = false;
+  hideResult();
+  setStatus('');
+  updateButtons();
+  const bar = $('#progress'), detail = $('#run-detail');
+  $('#run-label').textContent = `${verb} files…`;
+  $('#cancel-btn').disabled = false;
+  $('#actions').hidden = true;
+  $('#run').hidden = false;
+
+  const total = items.length;
+  const totalBytes = sum(items.map(sizeOfItem));
+  const started = performance.now();
+  let processed = 0, bytes = 0;
+  const done = [], failed = [];
+  const paint = () => {
+    const frac = totalBytes ? bytes / totalBytes : processed / (total || 1);
+    bar.max = 1000; bar.value = Math.round(frac * 1000);
+    const elapsed = performance.now() - started;
+    const eta = elapsed > 1500 && frac > 0 && frac < 1 ? (elapsed * (1 - frac) / frac) / 1000 : null;
+    detail.textContent = `${fmtNum(processed)} of ${plural(total, 'file')} · ${fmtBytes(bytes)} of ${fmtBytes(totalBytes)}` +
+      (eta !== null ? ` · about ${fmtDuration(eta)} left` : '');
+    document.title = `${Math.floor(frac * 100)}% ${verb.toLowerCase()} · ${BASE_TITLE}`;
+  };
+  paint();
+  try {
+    for (const item of items) {
+      if (state.cancelRequested) break;
+      try {
+        done.push({ item, result: await work(item) });
+      } catch (err) {
+        failed.push({ item, error: err.message || String(err) });
+      }
+      processed++;
+      bytes += sizeOfItem(item);
+      paint();
+      options.onFileDone?.(processed);
+    }
+  } finally {
+    state.busy = false;
+    $('#run').hidden = true;
+    $('#actions').hidden = false;
+    document.title = BASE_TITLE;
+  }
+  return { done, failed, cancelled: processed < total, total };
+}
+
+function cancel() {
+  if (!state.busy) return;
+  state.cancelRequested = true;
+  $('#run-label').textContent = 'Cancelling after this file…';
+  $('#cancel-btn').disabled = true;
+}
+
+function hideResult() {
+  const el = $('#result');
+  el.hidden = true;
+  el.innerHTML = '';
+}
+
+function showResult({ kind = 'ok', title, text = '', failed = [], undoLabel = null }) {
+  const el = $('#result');
+  el.className = `result ${kind}`;
+  const failures = failed.length
+    ? `<details><summary>${plural(failed.length, 'file')} couldn't be processed</summary>${
+        '<div class="list">' + failed.map(f => `<div class="r"><span class="n">${esc(f.item.name || f.item.from)}</span><em>${esc(f.error)}</em></div>`).join('') + '</div>'}</details>`
+    : '';
+  el.innerHTML = `<div class="text"><b data-testid="result-title">${esc(title)}</b>${text ? `<p>${esc(text)}</p>` : ''}${failures}</div>` +
+    (undoLabel ? `<button id="undo-btn">${esc(undoLabel)}</button>` : '');
+  el.hidden = false;
+  $('#undo-btn')?.addEventListener('click', () => undo());
+}
+
+// mode: 'move' (into the _rejected subfolder) or 'delete' (permanent).
+async function cull({ mode = 'move', skipConfirm = false } = {}) {
+  if (state.busy || !state.target) return;
+  const moving = mode === 'move';
+  const target = state.target;
+
+  // Request write access first, while we still have the click's user activation.
+  if (!(await ensurePermission(target.handle, 'readwrite'))) {
+    setStatus('Permission to change “Photos to be culled” was denied.', 'err');
+    return;
+  }
+
+  // Re-read both folders so we act on what is on disk right now, not on a stale preview.
+  state.busy = true;
+  try { await serial(() => doRescan({ force: true })); }
+  finally { state.busy = false; updateButtons(); }
+
+  const plan = state.plan;
+  const allowed = actionState();
+  if (!plan || !(moving ? allowed.move : allowed.del)) {
+    setStatus(allowed.hint || 'Nothing to remove.', 'warn');
+    return;
+  }
+
+  const n = plan.remove.length, k = plan.keep.length;
+  const warn = planWarnings(plan).map(w => `⚠ ${w.title}\n`).join('');
+  const question = (warn ? warn + '\n' : '') + (moving
+    ? `Move ${plural(n, 'file')} (${fmtBytes(plan.removeBytes)}) from “${target.handle.name}” into its “${REJECTED_DIR}” subfolder?\n\n` +
+      `${plural(k, 'file')} ${k === 1 ? 'stays' : 'stay'} where ${k === 1 ? 'it is' : 'they are'}. Nothing is deleted, and you can undo this afterwards.`
+    : `Permanently delete ${plural(n, 'file')} (${fmtBytes(plan.removeBytes)}) from “${target.handle.name}”?\n\n` +
+      `${plural(k, 'file')} will be kept. Deleted files do NOT go to the ${osNames.trash} and cannot be recovered.`);
+  if (!skipConfirm && !confirm(question)) return;
+  state.busy = true; // keep auto-rescans out until the run starts
+
+  let rejectedDir = null, createdDir = false;
+  if (moving) {
+    try {
+      rejectedDir = await target.handle.getDirectoryHandle(REJECTED_DIR);
+    } catch (err) {
+      if (err.name === 'NotFoundError') {
+        try {
+          rejectedDir = await target.handle.getDirectoryHandle(REJECTED_DIR, { create: true });
+          createdDir = true;
+        } catch (e) { err = e; }
+      }
+      if (!rejectedDir) {
+        state.busy = false;
+        updateButtons();
+        setStatus(err.name === 'TypeMismatchError'
+          ? `A file called “${REJECTED_DIR}” is in the way. Rename or remove it and try again.`
+          : `Could not create the “${REJECTED_DIR}” folder: ${err.message}`, 'err');
+        return { done: 0, failed: [err.message], cancelled: false };
+      }
+    }
+  }
+
+  const res = await runBatch({
+    verb: moving ? 'Moving' : 'Deleting',
+    items: plan.remove,
+    sizeOfItem: item => sizeOf(item.name),
+    work: item => moving
+      ? moveFile(target.handle, item.name, rejectedDir)
+      : target.handle.removeEntry(item.name),
+  });
+
+  const movedBytes = sum(res.done.map(d => sizeOf(d.item.name)));
+  if (moving && res.done.length) {
+    const moved = res.done.map(d => ({ from: d.item.name, to: d.result, size: sizeOf(d.item.name) }));
+    const lm = state.lastMove;
+    if (lm && await lm.targetDir.isSameEntry(target.handle)) lm.moved.push(...moved);
+    else state.lastMove = { targetDir: target.handle, rejectedDir, createdDir, moved };
+  } else if (!moving) {
+    state.lastMove = null;
+  }
+  await serial(() => doRescan({ force: true }));
+
+  const nDone = res.done.length;
+  const what = moving
+    ? `${res.cancelled ? `Cancelled. Moved ${fmtNum(nDone)} of ${plural(res.total, 'file')}` : `Moved ${plural(nDone, 'file')}`} (${fmtBytes(movedBytes)}) to “${REJECTED_DIR}”.`
+    : `${res.cancelled ? `Cancelled. Deleted ${fmtNum(nDone)} of ${plural(res.total, 'file')}` : `Deleted ${plural(nDone, 'file')}`} (${fmtBytes(movedBytes)}).`;
+  showResult({
+    kind: res.failed.length ? 'err' : 'ok',
+    title: what,
+    text: moving && nDone ? `Check them in ${osNames.fm}, then drag the “${REJECTED_DIR}” folder to the ${osNames.trash}. Changed your mind? Undo puts them back.` : '',
+    failed: res.failed,
+    undoLabel: moving && state.lastMove ? 'Undo move' : null,
+  });
+  updateButtons();
+  return { done: nDone, failed: res.failed.map(f => `${f.item.name}: ${f.error}`), cancelled: res.cancelled };
+}
+
+async function undo() {
+  const lm = state.lastMove;
+  if (!lm || state.busy) return;
+  if (!(await ensurePermission(lm.targetDir, 'readwrite'))) {
+    setStatus('Permission to change “Photos to be culled” was denied.', 'err');
+    return;
+  }
+  const items = lm.moved.slice().reverse();
+  const res = await runBatch({
+    verb: 'Restoring',
+    items,
+    sizeOfItem: i => i.size,
+    work: i => moveFile(lm.rejectedDir, i.to, lm.targetDir, i.from),
+  });
+  const restored = new Set(res.done.map(d => d.item));
+  lm.moved = lm.moved.filter(i => !restored.has(i));
+  let removedDir = false;
+  if (!lm.moved.length) {
+    state.lastMove = null;
+    if (lm.createdDir) {
+      try { await lm.targetDir.removeEntry(REJECTED_DIR); removedDir = true; } catch {} // only succeeds if empty
+    }
+  }
+  await serial(() => doRescan({ force: true }));
+
+  const bytes = sum(res.done.map(d => d.item.size));
+  const complete = !lm.moved.length;
+  showResult({
+    kind: res.failed.length ? 'err' : 'ok',
+    title: complete
+      ? `Restored ${plural(res.done.length, 'file')} (${fmtBytes(bytes)}) to “${lm.targetDir.name}”.`
+      : `Restored ${fmtNum(res.done.length)} of ${plural(res.total, 'file')}. ${plural(lm.moved.length, 'file')} ${lm.moved.length === 1 ? 'is' : 'are'} still in “${REJECTED_DIR}”.`,
+    text: removedDir ? `The empty “${REJECTED_DIR}” folder was removed.` : '',
+    failed: res.failed,
+    undoLabel: complete ? null : 'Restore the rest',
+  });
+  updateButtons();
+  return { restored: res.done.length, failed: res.failed.length, cancelled: res.cancelled };
+}
+
+/* ---------- Wiring ---------- */
+async function choose(role) {
+  if (state.busy || !supported) return;
+  try {
+    const handle = await window.showDirectoryPicker({
+      id: `photo-culler-${role}`,
+      mode: role === 'target' ? 'readwrite' : 'read',
+    });
+    await setFolder(role, handle);
+  } catch (err) {
+    if (err.name !== 'AbortError') setZoneMsg(role, err.message);
+  }
+}
+
+const isFileDrag = e => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+
+function wireZone(zone) {
+  const role = zone.dataset.role;
+  const pick = $('.pick', zone);
+  pick.addEventListener('click', () => choose(role));
+  $('.clear', zone).addEventListener('click', () => clearFolder(role));
+  // The whole box opens the picker, except its own buttons and messages.
+  zone.addEventListener('click', e => {
+    if (e.target.closest('button, a, input, .zone-msg')) return;
+    pick.click();
+  });
+
+  let depth = 0;
+  zone.addEventListener('dragenter', e => { if (!isFileDrag(e)) return; e.preventDefault(); depth++; zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; zone.classList.remove('drag'); } });
+  zone.addEventListener('dragover', e => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; });
+  zone.addEventListener('drop', async e => {
+    e.preventDefault();
+    depth = 0;
+    zone.classList.remove('drag');
+    if (state.busy) { setZoneMsg(role, 'Wait for the current run to finish first.'); return; }
+    const items = [...(e.dataTransfer?.items || [])].filter(i => i.kind === 'file');
+    if (items.length !== 1) { setZoneMsg(role, 'Drop exactly one folder.'); return; }
+    if (!items[0].getAsFileSystemHandle) {
+      setZoneMsg(role, 'Dragging folders in needs Chrome or Edge. Use “Choose folder” instead.');
+      return;
+    }
+    let handle = null;
+    try {
+      // Must be called synchronously inside the drop handler.
+      handle = await items[0].getAsFileSystemHandle();
+    } catch (err) {
+      setZoneMsg(role, `Couldn't open what was dropped: ${err.message}`);
+      return;
+    }
+    if (!handle || handle.kind !== 'directory') {
+      setZoneMsg(role, 'That was a file. Only folders can be dropped here.');
+      return;
+    }
+    await setFolder(role, handle);
+  });
+}
+
+// Highlight both drop zones while a folder is dragged anywhere over the page,
+// and keep a drop that misses them from opening the file in the tab.
+let pageDrag = 0;
+const endPageDrag = () => { pageDrag = 0; document.body.classList.remove('dragging'); };
+window.addEventListener('dragenter', e => { if (!isFileDrag(e)) return; pageDrag++; document.body.classList.add('dragging'); });
+window.addEventListener('dragleave', e => { if (!isFileDrag(e)) return; if (--pageDrag <= 0) endPageDrag(); });
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => { e.preventDefault(); endPageDrag(); });
+window.addEventListener('dragend', endPageDrag);
+
+window.addEventListener('beforeunload', e => {
+  if (!state.busy) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+window.addEventListener('focus', autoRescan);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoRescan(); });
+
+document.querySelectorAll('.zone').forEach(wireZone);
+$('#move-btn').addEventListener('click', () => cull({ mode: 'move' }));
+$('#delete-btn').addEventListener('click', () => cull({ mode: 'delete' }));
+$('#rescan-btn').addEventListener('click', rescan);
+$('#cancel-btn').addEventListener('click', cancel);
+$('#help-link').addEventListener('click', () => {
+  const rules = $('#rules');
+  rules.open = true;
+  rules.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+const sidecarBox = $('#opt-sidecars');
+try {
+  const saved = localStorage.getItem('photo-culler:sidecars');
+  if (saved !== null) sidecarBox.checked = saved === '1';
+} catch {}
+sidecarBox.addEventListener('change', () => {
+  try { localStorage.setItem('photo-culler:sidecars', sidecarBox.checked ? '1' : '0'); } catch {}
+  serial(refreshPlan);
+});
+
+const planEl = $('#plan');
+planEl.addEventListener('toggle', e => {
+  const key = e.target.dataset?.key;
+  if (!key) return;
+  if ('fresh' in e.target.dataset) { delete e.target.dataset.fresh; return; }
+  state.open[key] = e.target.open;
+}, true); // toggle doesn't bubble, so listen while it travels down
+planEl.addEventListener('click', e => {
+  const btn = e.target.closest('[data-view]');
+  if (!btn) return;
+  state.view = btn.dataset.view;
+  renderRemoveView();
+});
+
+if (!supported) {
+  const banner = $('#unsupported');
+  banner.innerHTML = unsupportedMessage(browserName(navigator.userAgent));
+  banner.hidden = false;
+  document.body.classList.add('unsupported');
+}
+renderZone('culled');
+renderZone('target');
+renderPlan();
+updateButtons();
+
+// Hook for the automated tests in tests.html
+window.PhotoCuller = {
+  classify, summarize, buildPlan, setFolder, clearFolder, cull, undo, cancel, rescan, autoRescan,
+  state, options, REJECTED_DIR,
+  fmtNum, fmtBytes, fmtDuration, plural, platformNames, browserName, unsupportedMessage, extractEmbeddedJpeg,
+  idle: () => scanChain,
+};
+</script>
+</body>
+</html>
